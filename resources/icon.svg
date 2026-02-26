@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4CAF50"/>
+      <stop offset="100%" style="stop-color:#2196F3"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="8" fill="url(#bg)"/>
+  <text x="32" y="28" font-family="Arial" font-size="14" fill="white" text-anchor="middle" font-weight="bold">AI</text>
+  <text x="32" y="46" font-family="Consolas" font-size="12" fill="white" text-anchor="middle">&lt;/&gt;</text>
+  <circle cx="50" cy="14" r="6" fill="#FFD700"/>
+  <path d="M48 14 L50 12 L52 14 L50 16 Z" fill="white"/>
+</svg>
