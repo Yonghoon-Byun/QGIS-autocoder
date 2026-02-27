@@ -17,7 +17,8 @@ from .core.prompt_manager import PromptManager
 from .core.code_executor import CodeExecutor
 from .workers.api_worker import ApiWorker
 from .llm_providers import (
-    OpenAIProvider, ClaudeProvider, OllamaProvider, OpenAICompatProvider
+    OpenAIProvider, ClaudeProvider, OllamaProvider, OpenAICompatProvider,
+    GeminiVertexProvider
 )
 from .llm_providers.base_provider import LLMProviderError
 
@@ -152,20 +153,56 @@ class QgisAiAutoCoder:
                 f"{self.SETTINGS_PREFIX}/auto_retry", False, type=bool
             )
         }
-        self.dialog.get_settings_panel().set_settings(settings)
+        # 환경변수 우선 적용 (관리자 설정)
+        admin_settings = self._get_admin_settings()
+        settings.update(admin_settings)
+
+        settings_panel = self.dialog.get_settings_panel()
+        settings_panel.set_settings(settings)
+        settings_panel.set_admin_mode(admin_settings)
         self._update_provider(settings)
 
+    def _get_admin_settings(self) -> dict:
+        """환경변수에서 관리자 설정을 읽습니다.
+
+        지원 환경변수:
+          QGIS_AI_PROVIDER  - LLM 제공자 (예: Claude, OpenAI, Gemini (Vertex AI))
+          QGIS_AI_API_KEY   - API 키 또는 GCP 프로젝트 ID
+          QGIS_AI_MODEL     - 모델명
+          QGIS_AI_BASE_URL  - Base URL 또는 리전
+
+        Returns:
+            dict: 설정된 환경변수 항목만 포함 (미설정 항목은 제외)
+        """
+        env_map = {
+            'QGIS_AI_PROVIDER': 'provider',
+            'QGIS_AI_API_KEY':  'api_key',
+            'QGIS_AI_MODEL':    'model',
+            'QGIS_AI_BASE_URL': 'base_url',
+        }
+        admin = {}
+        for env_key, settings_key in env_map.items():
+            value = os.environ.get(env_key, '').strip()
+            if value:
+                admin[settings_key] = value
+        return admin
+
     def _save_settings(self):
-        """설정 저장"""
+        """설정 저장 (관리자 환경변수 항목은 저장에서 제외)"""
         if not self.dialog:
             return
 
         settings = self.dialog.get_settings_panel().get_settings()
+        admin_settings = self._get_admin_settings()
 
-        self.settings.setValue(f"{self.SETTINGS_PREFIX}/provider", settings["provider"])
-        self.settings.setValue(f"{self.SETTINGS_PREFIX}/api_key", settings["api_key"])
-        self.settings.setValue(f"{self.SETTINGS_PREFIX}/base_url", settings["base_url"])
-        self.settings.setValue(f"{self.SETTINGS_PREFIX}/model", settings["model"])
+        # 관리자가 환경변수로 관리하는 항목은 QSettings에 저장하지 않음
+        for key in ["provider", "api_key", "base_url", "model"]:
+            if key not in admin_settings:
+                self.settings.setValue(
+                    f"{self.SETTINGS_PREFIX}/{key}", settings[key]
+                )
+
+        # 사용자 기본설정은 항상 저장
         self.settings.setValue(f"{self.SETTINGS_PREFIX}/auto_execute", settings["auto_execute"])
         self.settings.setValue(f"{self.SETTINGS_PREFIX}/show_code", settings["show_code"])
         self.settings.setValue(f"{self.SETTINGS_PREFIX}/auto_retry", settings["auto_retry"])
@@ -187,7 +224,8 @@ class QgisAiAutoCoder:
             "OpenAI": OpenAIProvider,
             "Claude": ClaudeProvider,
             "Ollama": OllamaProvider,
-            "OpenAI 호환": OpenAICompatProvider
+            "OpenAI 호환": OpenAICompatProvider,
+            "Gemini (Vertex AI)": GeminiVertexProvider,
         }
 
         provider_class = provider_map.get(provider_name, OpenAIProvider)
@@ -220,7 +258,7 @@ class QgisAiAutoCoder:
                 )
 
     def _on_send_message(self, message: str):
-        """메시지 전송 처리"""
+        """메시지 전송 처리 (스트리밍 지원)"""
         if not self.dialog:
             return
 
@@ -250,6 +288,9 @@ class QgisAiAutoCoder:
         chat_panel.set_loading(True)
         chat_panel.log_widget.log("AI에게 요청 중...", "info")
 
+        # 기존 워커 정리
+        self._cleanup_worker()
+
         # API 호출 (비동기)
         self.api_worker = ApiWorker()
         self.api_worker.setup(
@@ -258,10 +299,36 @@ class QgisAiAutoCoder:
             system_prompt=self.prompt_manager.get_system_prompt()
         )
 
-        # 시그널 연결
-        self.api_worker.response_received.connect(
-            lambda response: self._on_response_received(response, settings)
+        # 스트리밍 지원 여부에 따라 시그널 연결 분기
+        use_streaming = (
+            self.provider is not None and
+            self.provider.supports_streaming()
         )
+
+        if use_streaming:
+            # 스트리밍 모드: 토큰 수신 시 채팅 위젯 업데이트
+            self.api_worker.started_signal.connect(
+                chat_panel.chat_widget.begin_assistant_stream
+            )
+            self.api_worker.token_received.connect(
+                chat_panel.chat_widget.append_stream_token
+            )
+            self.api_worker.response_received.connect(
+                lambda response: self._on_response_received(
+                    response, settings, streaming=True
+                )
+            )
+            self.api_worker.finished_signal.connect(
+                chat_panel.chat_widget.finalize_stream
+            )
+        else:
+            # 비스트리밍 모드: 완성된 응답을 한 번에 표시
+            self.api_worker.response_received.connect(
+                lambda response: self._on_response_received(
+                    response, settings, streaming=False
+                )
+            )
+
         self.api_worker.error_occurred.connect(self._on_api_error)
         self.api_worker.finished_signal.connect(
             lambda: chat_panel.set_loading(False)
@@ -270,8 +337,15 @@ class QgisAiAutoCoder:
         # 워커 시작
         self.api_worker.start()
 
-    def _on_response_received(self, response: str, settings: dict):
-        """API 응답 수신"""
+    def _on_response_received(self, response: str, settings: dict,
+                              streaming: bool = False):
+        """API 응답 수신 처리
+
+        Args:
+            response: 전체 응답 텍스트
+            settings: 현재 설정
+            streaming: True이면 채팅 위젯에 이미 스트리밍으로 표시됨
+        """
         if not self.dialog:
             return
 
@@ -288,19 +362,21 @@ class QgisAiAutoCoder:
         chat_panel.show_code_area(show_code)
 
         if code:
-            # 대화에 코드 추가
-            chat_panel.chat_widget.add_assistant_message(code, is_code=True)
-
-            # 코드 에디터에 설정
+            # 코드 에디터 업데이트 (스트리밍/비스트리밍 공통)
             chat_panel.set_code(code)
             chat_panel.log_widget.log("코드 생성 완료", "success")
+
+            if not streaming:
+                # 비스트리밍 모드에서만 채팅 버블 추가 (스트리밍은 이미 표시됨)
+                chat_panel.chat_widget.add_assistant_message(code, is_code=True)
 
             # 자동 실행
             if settings.get("auto_execute", False):
                 self._on_execute_code(code)
         else:
-            # 코드가 없는 응답
-            chat_panel.chat_widget.add_assistant_message(response)
+            if not streaming:
+                # 비스트리밍 모드에서만 채팅에 응답 추가
+                chat_panel.chat_widget.add_assistant_message(response)
             chat_panel.log_widget.log("응답 수신 (코드 없음)", "info")
 
     def _on_api_error(self, error_message: str):
@@ -361,6 +437,9 @@ class QgisAiAutoCoder:
         # 로딩 상태
         chat_panel.set_loading(True)
 
+        # 기존 워커 정리
+        self._cleanup_worker()
+
         # API 호출
         self.api_worker = ApiWorker()
         self.api_worker.setup(
@@ -373,15 +452,52 @@ class QgisAiAutoCoder:
         retry_settings = settings.copy()
         retry_settings["auto_retry"] = False
 
-        self.api_worker.response_received.connect(
-            lambda response: self._on_response_received(response, retry_settings)
+        use_streaming = (
+            self.provider is not None and
+            self.provider.supports_streaming()
         )
+
+        if use_streaming:
+            self.api_worker.started_signal.connect(
+                chat_panel.chat_widget.begin_assistant_stream
+            )
+            self.api_worker.token_received.connect(
+                chat_panel.chat_widget.append_stream_token
+            )
+            self.api_worker.response_received.connect(
+                lambda response: self._on_response_received(
+                    response, retry_settings, streaming=True
+                )
+            )
+            self.api_worker.finished_signal.connect(
+                chat_panel.chat_widget.finalize_stream
+            )
+        else:
+            self.api_worker.response_received.connect(
+                lambda response: self._on_response_received(
+                    response, retry_settings, streaming=False
+                )
+            )
+
         self.api_worker.error_occurred.connect(self._on_api_error)
         self.api_worker.finished_signal.connect(
             lambda: chat_panel.set_loading(False)
         )
 
         self.api_worker.start()
+
+    def _cleanup_worker(self):
+        """기존 API 워커를 정리합니다."""
+        if self.api_worker:
+            if self.api_worker.isRunning():
+                self.api_worker.cancel()
+                self.api_worker.wait(1000)
+            try:
+                self.api_worker.disconnect()
+            except TypeError:
+                pass
+            self.api_worker.deleteLater()
+            self.api_worker = None
 
     def _on_cancel_request(self):
         """요청 취소"""

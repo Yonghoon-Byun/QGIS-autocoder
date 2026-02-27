@@ -22,8 +22,13 @@ class ContextBuilder:
         try:
             from qgis.core import QgsProject, QgsWkbTypes, QgsMapLayerType
 
+            from qgis.core import Qgis
+
             project = QgsProject.instance()
             context_parts = []
+
+            # QGIS 버전
+            context_parts.append(f"QGIS 버전: {Qgis.QGIS_VERSION}")
 
             # 프로젝트 정보
             project_name = project.baseName() or "새 프로젝트"
@@ -67,7 +72,7 @@ class ContextBuilder:
             return f"컨텍스트 수집 오류: {str(e)}"
 
     def _get_layer_info(self, layer) -> str:
-        """레이어 정보를 문자열로 반환합니다."""
+        """레이어 정보를 문자열로 반환합니다 (필드 스키마 포함)."""
         try:
             from qgis.core import QgsMapLayerType, QgsWkbTypes, QgsVectorLayer
 
@@ -80,17 +85,54 @@ class ContextBuilder:
             if isinstance(layer, QgsVectorLayer):
                 geom_type = QgsWkbTypes.displayString(layer.wkbType())
                 feature_count = layer.featureCount()
-                info_parts.append(f"[{geom_type}, {feature_count}개 피처]")
+                selected_count = layer.selectedFeatureCount()
+                info_parts.append(f"[{geom_type}, {feature_count}개 피처")
+                if selected_count > 0:
+                    info_parts.append(f", {selected_count}개 선택됨")
+                info_parts.append("]")
 
             # CRS
             crs = layer.crs()
             if crs.isValid():
                 info_parts.append(f"CRS: {crs.authid()}")
 
-            return " ".join(info_parts)
+            base_info = " ".join(info_parts)
+
+            # 필드 스키마 (벡터 레이어만)
+            if isinstance(layer, QgsVectorLayer):
+                field_info = self._get_field_schema(layer)
+                if field_info:
+                    return f"{base_info}\n    필드: {field_info}"
+
+            return base_info
 
         except Exception:
             return layer.name()
+
+    def _get_field_schema(self, layer) -> str:
+        """벡터 레이어의 필드 스키마를 문자열로 반환합니다."""
+        try:
+            from PyQt5.QtCore import QVariant
+
+            type_map = {
+                QVariant.Int: "Int",
+                QVariant.LongLong: "LongInt",
+                QVariant.Double: "Float",
+                QVariant.String: "String",
+                QVariant.Date: "Date",
+                QVariant.DateTime: "DateTime",
+                QVariant.Bool: "Bool",
+            }
+
+            fields = layer.fields()
+            field_parts = []
+            for field in fields:
+                type_name = type_map.get(field.type(), "Unknown")
+                field_parts.append(f"{field.name()}({type_name})")
+
+            return ", ".join(field_parts) if field_parts else ""
+        except Exception:
+            return ""
 
     def _get_layer_type_str(self, layer) -> str:
         """레이어 타입을 문자열로 반환합니다."""

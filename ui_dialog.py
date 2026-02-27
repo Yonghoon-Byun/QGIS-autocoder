@@ -5,8 +5,8 @@ QGIS AI Auto-Coder 팝업 다이얼로그 UI
 reference/prompt.md 디자인 시스템 적용
 """
 
-from PyQt5.QtCore import Qt, pyqtSignal, QEvent
-from PyQt5.QtGui import QFont, QTextCursor, QIcon
+from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QTimer
+from PyQt5.QtGui import QFont, QTextCursor, QTextCharFormat, QColor, QIcon
 from PyQt5.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QComboBox, QPushButton,
@@ -274,6 +274,74 @@ class ChatWidget(QTextBrowser):
     def clear_chat(self):
         self.clear()
 
+    def begin_assistant_stream(self):
+        """스트리밍 시작: AI 응답 영역을 생성하고 커서 위치를 저장합니다."""
+        self._stream_buffer = ""
+
+        # AI 헤더 단락 삽입
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.End)
+
+        cursor.insertBlock()
+        header_fmt = QTextCharFormat()
+        header_fmt.setForeground(QColor("#6b7280"))
+        header_fmt.setFontPointSize(9)
+        cursor.setCharFormat(header_fmt)
+        cursor.insertText("AI 어시스턴트")
+
+        cursor.insertBlock()
+
+        # 스트리밍 콘텐츠 삽입 시작 위치 저장
+        self._stream_content_start = cursor.position()
+
+        # 타이핑 커서 표시
+        content_fmt = QTextCharFormat()
+        content_fmt.setForeground(QColor("#374151"))
+        cursor.setCharFormat(content_fmt)
+        cursor.insertText("▍")
+
+        self.setTextCursor(cursor)
+        self._scroll_to_bottom()
+
+    def append_stream_token(self, token: str):
+        """토큰을 스트리밍 영역에 추가합니다."""
+        if not hasattr(self, '_stream_content_start'):
+            return
+
+        self._stream_buffer += token
+
+        # 스트리밍 시작 위치부터 끝까지 선택 후 교체
+        cursor = self.textCursor()
+        cursor.setPosition(self._stream_content_start)
+        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+
+        content_fmt = QTextCharFormat()
+        content_fmt.setForeground(QColor("#374151"))
+        cursor.setCharFormat(content_fmt)
+        cursor.insertText(self._stream_buffer + "▍")
+
+        self.setTextCursor(cursor)
+        self._scroll_to_bottom()
+
+    def finalize_stream(self):
+        """스트리밍 완료: 타이핑 커서 인디케이터를 제거합니다."""
+        if not hasattr(self, '_stream_content_start'):
+            return
+
+        # 타이핑 커서(▍) 제거
+        cursor = self.textCursor()
+        cursor.setPosition(self._stream_content_start)
+        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+
+        content_fmt = QTextCharFormat()
+        content_fmt.setForeground(QColor("#374151"))
+        cursor.setCharFormat(content_fmt)
+        cursor.insertText(self._stream_buffer)
+
+        del self._stream_content_start
+        self._stream_buffer = ""
+        self._scroll_to_bottom()
+
 
 # ============================================================
 # 코드 에디터 위젯
@@ -461,6 +529,22 @@ class SettingsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
+        # 관리자 설정 배너 (환경변수 감지 시 표시)
+        self.admin_banner = QLabel()
+        self.admin_banner.setWordWrap(True)
+        self.admin_banner.setStyleSheet("""
+            QLabel {
+                background-color: #ecfdf5;
+                border: 1px solid #6ee7b7;
+                border-radius: 6px;
+                color: #065f46;
+                font-size: 12px;
+                padding: 8px 12px;
+            }
+        """)
+        self.admin_banner.setVisible(False)
+        layout.addWidget(self.admin_banner)
+
         # LLM 제공자 카드
         provider_card = Card()
         provider_card.add_header(
@@ -474,16 +558,16 @@ class SettingsPanel(QWidget):
         provider_label.setStyleSheet("font-size: 14px; min-width: 80px;")
         provider_row.addWidget(provider_label)
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["OpenAI", "Claude", "Ollama", "OpenAI 호환"])
+        self.provider_combo.addItems(["OpenAI", "Claude", "Ollama", "OpenAI 호환", "Gemini (Vertex AI)"])
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
         provider_row.addWidget(self.provider_combo, 1)
         provider_card.add_layout(provider_row)
 
         # API 키
         api_row = QHBoxLayout()
-        api_label = QLabel("API 키")
-        api_label.setStyleSheet("font-size: 14px; min-width: 80px;")
-        api_row.addWidget(api_label)
+        self.api_key_label = QLabel("API 키")
+        self.api_key_label.setStyleSheet("font-size: 14px; min-width: 80px;")
+        api_row.addWidget(self.api_key_label)
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
         self.api_key_edit.setPlaceholderText("sk-...")
@@ -512,6 +596,22 @@ class SettingsPanel(QWidget):
         self.refresh_models_btn.setToolTip("모델 목록 새로고침")
         model_row.addWidget(self.refresh_models_btn)
         provider_card.add_layout(model_row)
+
+        # Gemini Vertex AI 안내 (기본 숨김)
+        self.gemini_info_label = QLabel(
+            "ℹ gcloud auth application-default login 실행 필요"
+        )
+        self.gemini_info_label.setStyleSheet("""
+            font-size: 12px;
+            color: #6b7280;
+            padding: 4px 8px;
+            background-color: #f0f9ff;
+            border: 1px solid #bae6fd;
+            border-radius: 4px;
+        """)
+        self.gemini_info_label.setWordWrap(True)
+        self.gemini_info_label.setVisible(False)
+        provider_card.add_widget(self.gemini_info_label)
 
         layout.addWidget(provider_card)
 
@@ -546,22 +646,52 @@ class SettingsPanel(QWidget):
         self._on_provider_changed(self.provider_combo.currentText())
 
     def _on_provider_changed(self, provider: str):
-        self.api_key_edit.setEnabled(provider != "Ollama")
-        if provider == "Ollama":
+        is_gemini = provider == "Gemini (Vertex AI)"
+        is_ollama = provider == "Ollama"
+
+        # API 키 / 프로젝트 ID 레이블 및 플레이스홀더
+        if is_gemini:
+            self.api_key_label.setText("프로젝트 ID")
+            self.api_key_edit.setEnabled(True)
+            self.api_key_edit.setEchoMode(QLineEdit.Normal)
+            self.api_key_edit.setPlaceholderText("my-gcp-project-id")
+        elif is_ollama:
+            self.api_key_label.setText("API 키")
+            self.api_key_edit.setEnabled(False)
+            self.api_key_edit.setEchoMode(QLineEdit.Password)
             self.api_key_edit.setPlaceholderText("(필요 없음)")
         elif provider == "OpenAI":
+            self.api_key_label.setText("API 키")
+            self.api_key_edit.setEnabled(True)
+            self.api_key_edit.setEchoMode(QLineEdit.Password)
             self.api_key_edit.setPlaceholderText("sk-...")
         elif provider == "Claude":
+            self.api_key_label.setText("API 키")
+            self.api_key_edit.setEnabled(True)
+            self.api_key_edit.setEchoMode(QLineEdit.Password)
             self.api_key_edit.setPlaceholderText("sk-ant-...")
         else:
+            self.api_key_label.setText("API 키")
+            self.api_key_edit.setEnabled(True)
+            self.api_key_edit.setEchoMode(QLineEdit.Password)
             self.api_key_edit.setPlaceholderText("(선택 사항)")
 
-        if provider == "Ollama":
+        # Base URL / 리전 레이블 및 플레이스홀더
+        if is_gemini:
+            self.base_url_label.setText("리전")
+            self.base_url_edit.setPlaceholderText("us-central1")
+        elif is_ollama:
+            self.base_url_label.setText("Base URL")
             self.base_url_edit.setPlaceholderText("http://localhost:11434")
         elif provider == "OpenAI 호환":
+            self.base_url_label.setText("Base URL")
             self.base_url_edit.setPlaceholderText("http://localhost:1234/v1")
         else:
+            self.base_url_label.setText("Base URL")
             self.base_url_edit.setPlaceholderText("(기본값 사용)")
+
+        # Gemini 안내 메시지 표시
+        self.gemini_info_label.setVisible(is_gemini)
 
         self._update_model_list(provider)
 
@@ -569,11 +699,23 @@ class SettingsPanel(QWidget):
         self.model_combo.clear()
         models = {
             "OpenAI": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
-            "Claude": ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022",
-                       "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+            "Claude": [
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5-20251001",
+                "claude-sonnet-4-20250514",
+                "claude-3-5-sonnet-20241022",
+                "claude-3-5-haiku-20241022",
+                "claude-3-opus-20240229",
+            ],
             "Ollama": ["llama3.1:latest", "codellama:latest", "deepseek-coder:latest",
                        "mistral:latest", "qwen2.5-coder:latest"],
-            "OpenAI 호환": ["local-model"]
+            "OpenAI 호환": ["local-model"],
+            "Gemini (Vertex AI)": [
+                "gemini-2.0-flash-001",
+                "gemini-1.5-pro-002",
+                "gemini-1.5-flash-002",
+            ],
         }
         self.model_combo.addItems(models.get(provider, []))
 
@@ -605,6 +747,62 @@ class SettingsPanel(QWidget):
             self.show_code_check.setChecked(settings["show_code"])
         if "auto_retry" in settings:
             self.auto_retry_check.setChecked(settings["auto_retry"])
+
+    def set_admin_mode(self, admin_settings: dict):
+        """관리자 환경변수 설정을 UI에 반영합니다.
+
+        환경변수가 설정된 항목은 필드를 잠그고 배너를 표시합니다.
+
+        Args:
+            admin_settings: _get_admin_settings()가 반환한 dict
+                            (비어 있으면 일반 사용자 모드)
+        """
+        has_admin = bool(admin_settings)
+
+        # 배너 표시/숨김
+        if has_admin:
+            label_map = {
+                'provider': '제공자',
+                'api_key':  'API 키',
+                'model':    '모델',
+                'base_url': 'Base URL / 리전',
+            }
+            items = [label_map[k] for k in admin_settings if k in label_map]
+            self.admin_banner.setText(
+                f"🔒 관리자 설정 적용됨 (환경변수 QGIS_AI_*)\n"
+                f"잠긴 항목: {', '.join(items)}"
+            )
+        self.admin_banner.setVisible(has_admin)
+
+        # 환경변수에 있는 항목만 잠금 (없는 항목은 사용자가 자유롭게 변경)
+        if 'provider' in admin_settings:
+            self.provider_combo.setEnabled(False)
+        else:
+            self.provider_combo.setEnabled(True)
+
+        if 'api_key' in admin_settings:
+            self.api_key_edit.setEnabled(False)
+            self.api_key_edit.setPlaceholderText("환경변수에서 로드됨")
+        else:
+            # provider 변경 시 _on_provider_changed가 다시 활성화하므로 그냥 둠
+            pass
+
+        if 'model' in admin_settings:
+            self.model_combo.setEnabled(False)
+        else:
+            self.model_combo.setEnabled(True)
+
+        if 'base_url' in admin_settings:
+            self.base_url_edit.setEnabled(False)
+        else:
+            self.base_url_edit.setEnabled(True)
+
+        # 관리자 설정이 없으면 모든 필드 원상복구
+        if not has_admin:
+            self.provider_combo.setEnabled(True)
+            self.model_combo.setEnabled(True)
+            self.base_url_edit.setEnabled(True)
+            # api_key는 _on_provider_changed가 처리
 
 
 # ============================================================
@@ -769,7 +967,24 @@ class ChatPanel(QWidget):
         self.send_btn.setEnabled(not loading)
         self.cancel_btn.setEnabled(loading)
         self.input_edit.setEnabled(not loading)
-        self.send_btn.setText("생성 중..." if loading else "전송")
+
+        if loading:
+            self._loading_dots = 0
+            self._loading_timer = QTimer(self)
+            self._loading_timer.timeout.connect(self._update_loading_text)
+            self._loading_timer.start(500)
+            self.send_btn.setText("생성 중 ●")
+        else:
+            if hasattr(self, '_loading_timer') and self._loading_timer:
+                self._loading_timer.stop()
+                self._loading_timer = None
+            self.send_btn.setText("전송")
+
+    def _update_loading_text(self):
+        """로딩 버튼 텍스트 애니메이션"""
+        dots = ["●", "●●", "●●●", "●"]
+        self._loading_dots = (self._loading_dots + 1) % 4
+        self.send_btn.setText(f"생성 중 {dots[self._loading_dots]}")
 
     def show_code_area(self, show: bool):
         self.code_container.setVisible(show)

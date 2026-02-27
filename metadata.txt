@@ -1,15 +1,16 @@
 [general]
 name=QGIS AI Auto-Coder
 qgisMinimumVersion=3.16
-description=자연어로 PyQGIS 코드를 생성하고 실행하는 AI 어시스턴트
-version=1.0.0
+description=자연어로 PyQGIS 코드를 생성하고 실행하는 AI 어시스턴트 (스트리밍 지원)
+version=1.1.0
 author=GIS Developer
 email=developer@example.com
-about=이 플러그인은 OpenAI, Claude, Ollama 등의 LLM API를 사용하여 사용자의 자연어 요청을 PyQGIS 코드로 변환하고 즉시 실행합니다. qgis_mcp 기능을 벤치마킹하여 레이어 관리, 프로젝트 작업, Processing Toolbox 실행 등을 지원합니다.
+about=OpenAI, Claude, Ollama, Gemini Vertex AI 등의 LLM API를 사용하여 자연어 요청을 PyQGIS 코드로 변환하고 즉시 실행합니다. 실시간 스트리밍 응답, 필드 스키마 컨텍스트, Processing Toolbox 연동을 지원합니다.
 tracker=https://github.com/example/qgis-ai-autocoder/issues
 repository=https://github.com/example/qgis-ai-autocoder
-changelog=버전 1.0.0 - 초기 릴리즈
-tags=ai,llm,automation,pyqgis,chatgpt,claude,ollama
+changelog=버전 1.1.0 - Gemini Vertex AI 추가, 실시간 스트리밍, Claude SDK 업그레이드, PyQGIS 컨텍스트 강화
+	버전 1.0.0 - 초기 릴리즈
+tags=ai,llm,automation,pyqgis,chatgpt,claude,ollama,gemini,vertexai,streaming
 homepage=https://github.com/example/qgis-ai-autocoder
 category=Plugins
 icon=resources/icon.png

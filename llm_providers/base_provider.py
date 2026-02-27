@@ -5,7 +5,7 @@ Base LLM Provider
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Callable
 
 
 class BaseLLMProvider(ABC):
@@ -58,6 +58,28 @@ class BaseLLMProvider(ABC):
         if not self.model:
             return False, "모델이 선택되지 않았습니다."
         return True, ""
+
+    def supports_streaming(self) -> bool:
+        """스트리밍 지원 여부. 하위 클래스에서 오버라이드."""
+        return False
+
+    def generate_stream(self, messages: List[Dict[str, str]],
+                        system_prompt: str = "",
+                        on_token=None) -> str:
+        """스트리밍 방식으로 응답 생성. 미지원 시 generate() fallback.
+
+        Args:
+            messages: 대화 히스토리
+            system_prompt: 시스템 프롬프트
+            on_token: 토큰 수신 콜백 (Optional[Callable[[str], None]])
+
+        Returns:
+            str: 전체 응답 텍스트
+        """
+        result = self.generate(messages, system_prompt)
+        if on_token:
+            on_token(result)
+        return result
 
 
 class LLMProviderError(Exception):
