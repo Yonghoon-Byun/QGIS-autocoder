@@ -4,3 +4,5 @@ __pycache__/
 .omc/
 *.egg-info/
 .DS_Store
+.env
+gcp-credentials.json

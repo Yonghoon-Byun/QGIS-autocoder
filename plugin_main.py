@@ -36,6 +36,9 @@ class QgisAiAutoCoder:
         self.iface = iface
         self.plugin_dir = os.path.dirname(__file__)
 
+        # .env 파일 자동 로드
+        self._load_env_file()
+
         # 컴포넌트 초기화
         self.dialog: Optional[AiAutoCoderDialog] = None
         self.action: Optional[QAction] = None
@@ -161,6 +164,37 @@ class QgisAiAutoCoder:
         settings_panel.set_settings(settings)
         settings_panel.set_admin_mode(admin_settings)
         self._update_provider(settings)
+
+    def _load_env_file(self):
+        """플러그인 디렉토리의 .env 파일을 읽어 환경변수로 설정합니다.
+
+        이미 설정된 시스템 환경변수는 덮어쓰지 않습니다.
+        GOOGLE_APPLICATION_CREDENTIALS는 상대경로일 경우 플러그인 디렉토리 기준으로 변환합니다.
+        """
+        env_path = os.path.join(self.plugin_dir, '.env')
+        if not os.path.exists(env_path):
+            return
+
+        try:
+            with open(env_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' not in line:
+                        continue
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # 이미 설정된 시스템 환경변수는 유지
+                    if key not in os.environ or not os.environ[key]:
+                        # GCP 인증 파일 경로를 절대경로로 변환
+                        if key == 'GOOGLE_APPLICATION_CREDENTIALS' and \
+                           not os.path.isabs(value):
+                            value = os.path.join(self.plugin_dir, value)
+                        os.environ[key] = value
+        except Exception:
+            pass
 
     def _get_admin_settings(self) -> dict:
         """환경변수에서 관리자 설정을 읽습니다.
